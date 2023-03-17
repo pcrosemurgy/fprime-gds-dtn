@@ -43,7 +43,7 @@ setup(
     # information should match the F prime description information.
     ####
     name="fprime_gds",
-    use_scm_version={"root": ".", "relative_to": __file__},
+    #use_scm_version={"root": ".", "relative_to": __file__},
     license="Apache 2.0 License",
     description="F Prime Flight Software Ground Data System layer.",
     long_description="""
@@ -106,7 +106,7 @@ integrated configuration with ground in-the-loop.
         "Programming Language :: Python :: Implementation :: PyPy",
     ],
     python_requires=">=3.7",
-    setup_requires=["setuptools_scm"],
+    #setup_requires=["setuptools_scm"],
     install_requires=[
         "flask>=1.1.2,<=2.2.3",
         "flask_compress>=1.11",
