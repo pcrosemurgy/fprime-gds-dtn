@@ -33,7 +33,7 @@ import fprime_gds.common.communication.ground
 import fprime_gds.common.logger
 import fprime_gds.executables.cli
 from fprime_gds.common.communication.framing import FpFramerDeframer
-from fprime_gds.common.communication.updown import Downlinker, Uplinker
+from fprime_gds.common.communication.updown import Downlinker, DtnUplinker
 
 # Uses non-standard PIP package pyserial, so test the waters before getting a hard-import crash
 try:
@@ -86,7 +86,7 @@ def main():
     framer_class = FpFramerDeframer
     LOGGER.info("Starting uplinker/downlinker connecting to FSW using %s with %s", adapter, framer_class.__name__)
     downlinker = Downlinker(adapter, ground, framer_class())
-    uplinker = Uplinker(adapter, ground, framer_class(), downlinker)
+    uplinker = DtnUplinker(adapter, ground, framer_class(), downlinker)
 
     # Open resources for the handlers on either side, this prepares the resources needed for reading/writing data
     ground.open()

@@ -12,6 +12,7 @@ is represented by a single thread, as it is not dealing with multiple streams of
 import logging
 import threading
 from queue import Empty, Full, Queue
+import pyion
 
 from fprime.common.models.serialize.numerical_types import U32Type
 
@@ -226,3 +227,86 @@ class Uplinker:
             handshake packet
         """
         return U32Type(DataDescType["FW_PACKET_HAND"].value).serialize() + packet
+
+
+class DtnUplinker(Uplinker):
+
+    EID_NAME      = 'ipn:3.1'
+    DEST_EID_NAME = 'ipn:2.1'
+
+    def __init__(
+        self,
+        adapter: BaseAdapter,
+        ground: GroundHandler,
+        framer: FramerDeframer,
+        loopback: Downlinker,
+    ):
+        super().__init__(adapter, ground, framer, loopback)
+        self.th_dtn_frame = None
+
+        # Create a proxy to node 1 and attach to it
+        proxy = pyion.get_bp_proxy(1)
+
+        # Listen to 'ipn:3.1' for incoming data
+        self.eid = proxy.bp_open(self.EID_NAME) # TODO use as part of `with ... as eid` clause
+
+    def start(self):
+        super().start()
+        self.th_dtn_frame = threading.Thread(target=self._dtn_frame, name="DtnFrameThread")
+        self.th_dtn_frame.daemon = True
+        self.th_dtn_frame.start()
+
+    def join(self):
+        super().join()
+        if self.th_dtn_frame is not None:
+            self.th_dtn_frame.join()
+
+    def _dtn_frame(self):
+        # Create a proxy to node 1 and attach to it
+        pyion.ltp.ltp_init(0)
+        self.vspan = pyion.find_span(2) # TODO replace hardcoded remote engine ID
+
+        try:
+            while self.running:
+                # This is a blocking call
+                assert self.eid.is_open == True # TODO remove assertion
+                with pyion.ltp.ltp_dequeue_outbound_segment(self.vspan) as dtn_data:
+                    framed = self.framer.frame(dtn_data)
+                    #print('[GDS] LTP: framed {}'.format(len(framed)))
+
+                    # Uplink handles synchronous retries
+                    for retry in range(Uplinker.RETRY_COUNT):
+                        if self.adapter.write(framed):
+                            break
+                    else:
+                        UP_LOGGER.warning(
+                            "Uplink failed to send %d bytes of data after %d retries",
+                            len(framed),
+                            Uplinker.RETRY_COUNT,
+                        )
+        except OSError:
+            if self.running:
+                raise
+
+    def uplink(self):
+        try:
+            while self.running:
+                packets = self.ground.receive_all()
+                for packet in [
+                    packet
+                    for packet in packets
+                    if packet is not None and len(packet) > 0
+                ]:
+                    #print('[GDS] BP sending')
+                    assert self.eid.is_open == True # TODO remove assertion
+                    self.eid.bp_send(self.DEST_EID_NAME, bytes(packet))
+
+                    # Intentionally sending premature loopback handshake.
+                    # Could possibly track packet -> LTP segment to know
+                    # if packet was truly sent on the other thread.
+                    self.loopback.add_loopback_frame(Uplinker.get_handshake(packet))
+        # An OSError might occur during shutdown and is harmless.
+        # If we are not shutting down, this error should be propagated up the stack.
+        except OSError:
+            if self.running:
+                raise
