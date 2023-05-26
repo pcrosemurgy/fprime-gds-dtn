@@ -124,6 +124,67 @@ class Downlinker:
             DW_LOGGER.warning("GDS ground queue full, dropping loopback frame")
 
 
+class DtnDownlinker(Downlinker):
+
+    EID_NAME      = 'ipn:3.1'
+    DEST_EID_NAME = 'ipn:2.1'
+
+    def __init__(
+        self,
+        adapter: BaseAdapter,
+        ground: GroundHandler,
+        deframer: FramerDeframer
+    ):
+        super().__init__(adapter, ground, deframer)
+        self.th_dtn_deframe = None
+
+        # Create a proxy to node 1 and attach to it
+        proxy = pyion.get_bp_proxy(1)
+
+        # Listen to 'ipn:3.1' for incoming data
+        self.eid = proxy.bp_open(self.EID_NAME) # TODO use as part of `with ... as eid` clause
+
+    def start(self):
+        super().start()
+        self.th_dtn_deframe = threading.Thread(target=self._dtn_deframe, name="DtnDeframeThread")
+        self.th_dtn_deframe.daemon = True
+        self.th_dtn_deframe.start()
+
+    def join(self):
+        super().join()
+        if self.th_dtn_deframe is not None:
+            self.th_dtn_deframe.join()
+
+    def _dtn_deframe(self):
+        try:
+            while self.running:
+                bundle_frame = self.eid.bp_receive()
+                bundle_frame_str = ''.join(format(x, '02x') for x in bundle_frame)
+                #print('[GDS] BP deframe: {}'.format(bundle_frame_str))
+                try:
+                    self.outgoing.put_nowait(bundle_frame)
+                except Full:
+                    DW_LOGGER.warning("GDS ground queue full, dropping frame")
+        except OSError:
+            if self.running:
+                raise
+
+    def deframing(self):
+        pool = b""
+        while self.running:
+            # Blocks until data is available, but may still return b"" if timeout
+            pool += self.adapter.read()
+            ltp_frames, pool = self.deframer.deframe_all(pool, no_copy=True)
+            for ltp_frame in ltp_frames:
+                # Data has extra 4 bytes of data: 00 00 00 03 (`FW_PACKET_FILE`)
+                # TODO does this break file downlink?
+                ltp_frame = ltp_frame[4:]
+
+                ltp_frame_str = ''.join(format(x, '02x') for x in ltp_frame)
+                #print('[GDS] LTP deframe: {}'.format(ltp_frame_str))
+                pyion.ltp.ltp_handle_inbound_segment(ltp_frame)
+
+
 class Uplinker:
     """Uplinker used to pull data out of the ground layer and send to FSW
 
@@ -270,9 +331,10 @@ class DtnUplinker(Uplinker):
             while self.running:
                 # This is a blocking call
                 assert self.eid.is_open == True # TODO remove assertion
-                with pyion.ltp.ltp_dequeue_outbound_segment(self.vspan) as dtn_data:
-                    framed = self.framer.frame(dtn_data)
-                    #print('[GDS] LTP: framed {}'.format(len(framed)))
+                with pyion.ltp.ltp_dequeue_outbound_segment(self.vspan) as ltp_frame:
+                    #ltp_frame_str = ''.join(format(x, '02x') for x in ltp_frame)
+                    #print('[GDS] LTP frame: {}'.format(ltp_frame_str))
+                    framed = self.framer.frame(ltp_frame)
 
                     # Uplink handles synchronous retries
                     for retry in range(Uplinker.RETRY_COUNT):
@@ -297,7 +359,7 @@ class DtnUplinker(Uplinker):
                     for packet in packets
                     if packet is not None and len(packet) > 0
                 ]:
-                    #print('[GDS] BP sending')
+                    print(f'[GDS] BP sending {len(packet)} bytes')
                     assert self.eid.is_open == True # TODO remove assertion
                     self.eid.bp_send(self.DEST_EID_NAME, bytes(packet))
 
